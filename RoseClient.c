@@ -15,27 +15,49 @@
 /* This function takes in an RHP frame and validates or invalidates 
 *  the message according to the 16 bit checksum at the end of the message*/
 int validChecksum(char buffer[],int numBytes){
+    //convert the character array to an array of 16 bit values
     uint16_t newBuffer[numBytes/2];
-
     for(int i = 0;i < numBytes/2;i++){
         newBuffer[i] = (uint16_t)(buffer[2*i+1]<<8) + (uint8_t)buffer[2*i];
     }
 
-    uint32_t sum = 0;
+    uint32_t sum = 0;//Value of the sum of all the 16 bit words in the frame
 
     for(int i = 0;i < numBytes/2;i++){
         sum = sum + newBuffer[i];
+        //If there was an overflow, then add 1 to sum
         if(sum>>16 == 1){
             sum = (uint16_t)(sum + 1);
         }
     }
     
+    //If the sum equals FFFF, then the frame is valid.  Else, return with a fail message
     if(sum == 0xFFFF){
         return 1;
     } else {
         printf("Received message had invalid Checksum\n");
         return 0;
     }
+}
+
+/* This function takes in an RHP frame and extracts and displays all the relevant information*/
+void parseRHPFrame(char buffer[], int numBytes){
+    //Parse the received message into the Protocol Fields
+    uint8_t version = buffer[0];
+    uint8_t type = buffer[1];
+    uint16_t portID = (uint16_t)(buffer[3]<<8) + (uint8_t)buffer[2];
+    uint8_t length = buffer[4];
+    char receivedMessage[BUF_LEN];
+    for(int i = 0; i < length; i++){
+        receivedMessage[i] = buffer[5+i];
+    }
+    uint16_t checksum = (uint16_t)(buffer[numBytes-1]<<8) + (uint8_t)buffer[numBytes-2];
+
+    //Print out the message and the fields
+    printf("Received from server:\nVersion #: %u\nMessage Type: %u\n", version,type);
+    printf("PortID: %u\nMessage Length: %u\n",portID,length);
+    printf("Message: %s\n",receivedMessage);
+    printf("Checksum: 0x%X\n",checksum);
 }
 
 int main() {
@@ -80,28 +102,14 @@ int main() {
         return 0;
     }
 
-    //Attempt the transmission
+    //Loop to attempt the transmission 5 times
     for(int q = 0;q < 5;q++){
         //Receive message from server and run checksum test
         nBytes = recvfrom(clientSocket, buffer, BUF_LEN, 0, NULL, NULL);
 
+        //If the checksum is valid, then display the message.  If not, resend our message 
         if(validChecksum(buffer,nBytes) != 0){
-            //Parse the received message into the Protocol Fields
-            uint8_t version = buffer[0];
-            uint8_t type = buffer[1];
-            uint16_t portID = (uint16_t)(buffer[3]<<8) + (uint8_t)buffer[2];
-            uint8_t length = buffer[4];
-            char receivedMessage[BUF_LEN];
-            for(int i = 0; i < length; i++){
-                receivedMessage[i] = buffer[5+i];
-            }
-            uint16_t checksum = (uint16_t)(buffer[nBytes-1]<<8) + (uint8_t)buffer[nBytes-2];
-
-            //Print out the message and the fields
-            printf("Received from server:\nVersion #: %u\nMessage Type: %u\n", version,type);
-            printf("PortID: %u\nMessage Length: %u\n",portID,length);
-            printf("Message: %s\n",receivedMessage);
-            printf("Checksum: 0x%X\n",checksum);
+            parseRHPFrame(buffer,nBytes);
             break;//Break out of the loop because we had a successfully received message
         } else if(q < 5) {
             //Resend the message
