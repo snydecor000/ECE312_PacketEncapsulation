@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define SERVER "137.112.38.47"
-#define MESSAGE "hello"
+#define MESSAGE "hello\0"
 #define PORT 1874
 #define BUF_LEN 1024
 
@@ -38,6 +38,61 @@ int validChecksum(char buffer[],int numBytes){
         printf("Received message had invalid Checksum\n");
         return 0;
     }
+}
+
+/* This function takes in an RHP frame and makes the checksum value for 
+*  the message */
+uint16_t makeChecksum(char buffer[],int numBytes){
+    //convert the character array to an array of 16 bit values
+    uint16_t newBuffer[numBytes/2];
+    for(int i = 0;i < numBytes/2;i++){
+        newBuffer[i] = (uint16_t)(buffer[2*i+1]<<8) + (uint8_t)buffer[2*i];
+    }
+
+    uint32_t sum = 0;//Value of the sum of all the 16 bit words in the frame
+
+    for(int i = 0;i < numBytes/2;i++){
+        sum = sum + newBuffer[i];
+        //If there was an overflow, then add 1 to sum
+        if(sum>>16 == 1){
+            sum = (uint16_t)(sum + 1);
+        }
+    }
+    
+    sum = ~((uint16_t)sum);
+    return sum;
+}
+
+//
+char* packRHPFrame(char *frame,char payload[], uint8_t type, uint16_t portID){
+    uint8_t version = 5;
+    uint8_t length = 0;
+    while(payload[length] != '\0'){
+        length++;
+    }
+    length++;
+    frame[0] = (char)version;
+    frame[1] = (char)type;
+    frame[2] = (char)portID;
+    frame[3] = (char)(portID>>8);
+    frame[4] = (char)length;
+    int i = 0;
+    while(payload[i] != '\0'){
+        frame[5 + i] = payload[i];
+        i++;
+    }
+    frame[5+i] = '\0';
+
+    if(((6+i)%2) != 0){
+        frame[6+i]= (char)0x00;
+        i++;
+    }
+
+    uint16_t cSum = makeChecksum(frame,6+i);
+    frame[6+i] = (char)cSum;
+    frame[7+i] = (char)(cSum>>8);
+
+    return frame;
 }
 
 /* This function takes in an RHP frame and extracts and displays all the relevant information*/
@@ -95,30 +150,41 @@ int main() {
     serverAddr.sin_addr.s_addr = inet_addr(SERVER);
     memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);
 
+    char RHPMessage[BUF_LEN];
+    packRHPFrame(&RHPMessage,MESSAGE,2,223);
+    parseRHPFrame(RHPMessage,14);
+    printf("Checksum Test: %i",validChecksum(RHPMessage,14));
+
     // send a message to the server 
-    if (sendto(clientSocket, MESSAGE, strlen(MESSAGE), 0,
+    if (sendto(clientSocket, RHPMessage, strlen(RHPMessage), 0,
             (struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
         perror("sendto failed");
         return 0;
     }
+    printf("RHP Message sent: %s\n",MESSAGE);
 
     //Loop to attempt the transmission 5 times
     for(int q = 0;q < 5;q++){
         //Receive message from server and run checksum test
+        
+
         nBytes = recvfrom(clientSocket, buffer, BUF_LEN, 0, NULL, NULL);
 
         //If the checksum is valid, then display the message.  If not, resend our message 
         if(validChecksum(buffer,nBytes) != 0){
             parseRHPFrame(buffer,nBytes);
+            printf("Num Bytes: %i\n",nBytes);
             break;//Break out of the loop because we had a successfully received message
         } else if(q < 5) {
             //Resend the message
-            if (sendto(clientSocket, MESSAGE, strlen(MESSAGE), 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+            if (sendto(clientSocket, RHPMessage, strlen(RHPMessage), 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
                 perror("sendto failed");
                 return 0;
             }
+            printf("RHP Message sent: %s\n",MESSAGE);
         }
     }
+
     close(clientSocket);
     return 0;
 }
