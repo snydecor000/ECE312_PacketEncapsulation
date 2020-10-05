@@ -63,36 +63,33 @@ uint16_t makeChecksum(char buffer[],int numBytes){
     return sum;
 }
 
-//
-char* packRHPFrame(char *frame,char payload[], uint8_t type, uint16_t portID){
+//Returns the length of the frame in bytes
+int packRHPFrame(char *frame,char payload[], uint8_t type, uint16_t portID){
     uint8_t version = 5;
     uint8_t length = 0;
     while(payload[length] != '\0'){
         length++;
     }
     length++;
-    frame[0] = (char)version;
-    frame[1] = (char)type;
-    frame[2] = (char)portID;
-    frame[3] = (char)(portID>>8);
-    frame[4] = (char)length;
-    int i = 0;
-    while(payload[i] != '\0'){
-        frame[5 + i] = payload[i];
-        i++;
-    }
-    frame[5+i] = '\0';
-
-    if(((6+i)%2) != 0){
-        frame[6+i]= (char)0x00;
-        i++;
+    memcpy(&frame[0], &version,sizeof(version));
+    memcpy(&frame[1], &type,sizeof(type));
+    memcpy(&frame[2],&portID,sizeof(portID));
+    memcpy(&frame[4],&length,sizeof(length));
+    for(int i = 0;i < length;i++){
+        frame[5+i] = payload[length-1-i];
+        //printf("%c\n", payload[length-1-i]);
     }
 
-    uint16_t cSum = makeChecksum(frame,6+i);
-    frame[6+i] = (char)cSum;
-    frame[7+i] = (char)(cSum>>8);
+    if(((5+length)%2) != 0){
+        frame[5+length]= (char)0x00;
+        length++;
+        //printf("OHELL\n");
+    }
 
-    return frame;
+    uint16_t cSum = makeChecksum(frame,5+length);
+    memcpy(&frame[5+length],&cSum,sizeof(cSum));
+
+    return 7+length;
 }
 
 /* This function takes in an RHP frame and extracts and displays all the relevant information*/
@@ -151,13 +148,12 @@ int main() {
     memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);
 
     char RHPMessage[BUF_LEN];
-    packRHPFrame(&RHPMessage,MESSAGE,2,223);
-    parseRHPFrame(RHPMessage,14);
-    printf("Checksum Test: %i",validChecksum(RHPMessage,14));
+    int numSendBytes = packRHPFrame(&RHPMessage,MESSAGE,2,223);
+    //parseRHPFrame(RHPMessage,14);
+    //printf("Checksum Test: %i",validChecksum(RHPMessage,14));
 
     // send a message to the server 
-    if (sendto(clientSocket, RHPMessage, strlen(RHPMessage), 0,
-            (struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+    if (sendto(clientSocket, RHPMessage, numSendBytes, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
         perror("sendto failed");
         return 0;
     }
@@ -177,7 +173,7 @@ int main() {
             break;//Break out of the loop because we had a successfully received message
         } else if(q < 5) {
             //Resend the message
-            if (sendto(clientSocket, RHPMessage, strlen(RHPMessage), 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+            if (sendto(clientSocket, RHPMessage, numSendBytes, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
                 perror("sendto failed");
                 return 0;
             }
