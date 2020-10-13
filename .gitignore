@@ -1,6 +1,7 @@
 # Prerequisites
 *.d
 client
+*.png
 
 # Object files
 *.o

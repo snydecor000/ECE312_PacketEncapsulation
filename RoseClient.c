@@ -11,11 +11,16 @@
 #define MESSAGE "hello\0"
 #define PORT 1874
 #define BUF_LEN 1024
+#define TristenCM 223
+#define CoryCM 514
+#define RHP_CONTROL 2
+#define RHMP_MESSAGE 8
 
 /* This function takes in an RHP frame and validates or invalidates 
-*  the message according to the 16 bit checksum at the end of the message*/
+*  the message according to the 16 bit checksum at the end of the message.
+*  It will return 0 if it failed, and 1 if the frame passed CRC. */
 int validChecksum(char buffer[],int numBytes){
-    //convert the character array to an array of 16 bit values
+    //convert the frame character array to an array of 16 bit values
     uint16_t newBuffer[numBytes/2];
     for(int i = 0;i < numBytes/2;i++){
         newBuffer[i] = (uint16_t)(buffer[2*i+1]<<8) + (uint8_t)buffer[2*i];
@@ -23,9 +28,10 @@ int validChecksum(char buffer[],int numBytes){
 
     uint32_t sum = 0;//Value of the sum of all the 16 bit words in the frame
 
+    //Loop through, adding the 16 bit values to each other
     for(int i = 0;i < numBytes/2;i++){
         sum = sum + newBuffer[i];
-        //If there was an overflow, then add 1 to sum
+        //If there was an overflow, then add 1 to sum and get rid of the overflow
         if(sum>>16 == 1){
             sum = (uint16_t)(sum + 1);
         }
@@ -35,15 +41,15 @@ int validChecksum(char buffer[],int numBytes){
     if(sum == 0xFFFF){
         return 1;
     } else {
-        printf("Received message had invalid Checksum\n");
+        printf("Received message had invalid Checksum\n\n");
         return 0;
     }
 }
 
-/* This function takes in an RHP frame and makes the checksum value for 
+/* This function takes in an RHP frame and returns the checksum value for 
 *  the message */
 uint16_t makeChecksum(char buffer[],int numBytes){
-    //convert the character array to an array of 16 bit values
+    //convert the frame character array to an array of 16 bit values
     uint16_t newBuffer[numBytes/2];
     for(int i = 0;i < numBytes/2;i++){
         newBuffer[i] = (uint16_t)(buffer[2*i+1]<<8) + (uint8_t)buffer[2*i];
@@ -51,50 +57,66 @@ uint16_t makeChecksum(char buffer[],int numBytes){
 
     uint32_t sum = 0;//Value of the sum of all the 16 bit words in the frame
 
+    //Loop through, adding the 16 bit values to each other
     for(int i = 0;i < numBytes/2;i++){
         sum = sum + newBuffer[i];
-        //If there was an overflow, then add 1 to sum
+        //If there was an overflow, then add 1 to sum and get rid of the overflow
         if(sum>>16 == 1){
             sum = (uint16_t)(sum + 1);
         }
     }
-    
+    //Return the ones compliment of the final sum value
     sum = ~((uint16_t)sum);
     return sum;
 }
 
-//Returns the length of the frame in bytes
+/*  This function takes arguments for an RHP packet and constructs the header, adds 
+*   the payload, and attaches the checksum to the end.
+*
+*   It is passed, by reference a character array of the RHP frame where 
+*   the results will be stored, and the payload of the RHP frame.  It is also passed
+*   the RHP type, and the destination port ID.  
+*/
 int packRHPFrame(char *frame,char payload[], uint8_t type, uint16_t portID){
     uint8_t version = 5;
     uint8_t length = 0;
+
+    //Get the length of the payload in bytes
     while(payload[length] != '\0'){
         length++;
     }
     length++;
-    memcpy(&frame[0], &version,sizeof(version));
-    memcpy(&frame[1], &type,sizeof(type));
+
+    //Construct the header in little endian format
+    memcpy(&frame[0],&version,sizeof(version));
+    memcpy(&frame[1],&type,sizeof(type));
     memcpy(&frame[2],&portID,sizeof(portID));
     memcpy(&frame[4],&length,sizeof(length));
+
+    //Add the payload in reverse order to match the little endianness
     for(int i = 0;i < length;i++){
         frame[5+i] = payload[length-1-i];
-        //printf("%c\n", payload[length-1-i]);
     }
 
+    //Add an 8-bit buffer if it is not an even number of bytes
     if(((5+length)%2) != 0){
         frame[5+length]= (char)0x00;
         length++;
-        //printf("OHELL\n");
     }
 
+    //Add the checksum to the end
     uint16_t cSum = makeChecksum(frame,5+length);
     memcpy(&frame[5+length],&cSum,sizeof(cSum));
 
+    //Return the total length of the frame in bytess
     return 7+length;
 }
 
-/* This function takes in an RHP frame and extracts and displays all the relevant information*/
+/*  This function takes in an RHP frame, and extracts and displays all 
+*   the relevant information
+*/
 void parseRHPFrame(char buffer[], int numBytes){
-    //Parse the received message into the Protocol Fields
+    //Parse the received message into the RHP protocol Fields. Assume Little Endianness
     uint8_t version = buffer[0];
     uint8_t type = buffer[1];
     uint16_t portID = (uint16_t)(buffer[3]<<8) + (uint8_t)buffer[2];
@@ -108,8 +130,18 @@ void parseRHPFrame(char buffer[], int numBytes){
     //Print out the message and the fields
     printf("Received from server:\nVersion #: %u\nMessage Type: %u\n", version,type);
     printf("PortID: %u\nMessage Length: %u\n",portID,length);
-    printf("Message: %s\n",receivedMessage);
-    printf("Checksum: 0x%X\n",checksum);
+
+    //If this is a Control Message using only RHP, display the message 
+    if(type == RHP_CONTROL){
+        printf("Control Message: %s\n",receivedMessage);
+        printf("Checksum: 0x%X\n",checksum);
+    }
+    //If this is a RHMP Message, parse the RHMP frame
+    if(type == RHMP_MESSAGE){
+        printf("This is a RHMP Message\n");
+        //parseRHMPFrame();
+        printf("Checksum: 0x%X\n",checksum);
+    }
 }
 
 int main() {
@@ -148,22 +180,26 @@ int main() {
     memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);
 
     char RHPMessage[BUF_LEN];
-    int numSendBytes = packRHPFrame(&RHPMessage,MESSAGE,2,223);
+    int numSendBytes = packRHPFrame(&RHPMessage,MESSAGE,RHP_CONTROL,CoryCM);
     //parseRHPFrame(RHPMessage,14);
     //printf("Checksum Test: %i",validChecksum(RHPMessage,14));
 
-    // send a message to the server 
+
+
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //Sends the first RHP Control Message: "hello\0"
+
+    // send the message to the server 
     if (sendto(clientSocket, RHPMessage, numSendBytes, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
         perror("sendto failed");
         return 0;
     }
-    printf("RHP Message sent: %s\n",MESSAGE);
+
+    printf("RHP Control Message sent: %s\n",MESSAGE);
 
     //Loop to attempt the transmission 5 times
     for(int q = 0;q < 5;q++){
-        //Receive message from server and run checksum test
-        
-
+        //Receive message from server
         nBytes = recvfrom(clientSocket, buffer, BUF_LEN, 0, NULL, NULL);
 
         //If the checksum is valid, then display the message.  If not, resend our message 
@@ -177,7 +213,7 @@ int main() {
                 perror("sendto failed");
                 return 0;
             }
-            printf("RHP Message sent: %s\n",MESSAGE);
+            printf("RHP Control Message sent: %s\n",MESSAGE);
         }
     }
 
