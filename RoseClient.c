@@ -123,7 +123,11 @@ int packRHPFrame(char *frame,char payload[], uint8_t type, uint16_t portID){
     while(payload[length] != '\0'){
         length++;
     }
-    length++;
+    //Add the \0 to the end of the string only if it is a control message
+    if(type == RHP_CONTROL){
+        length++;
+    }
+
 
     //Construct the header in little endian format
     memcpy(&frame[0],&version,sizeof(version));
@@ -132,9 +136,16 @@ int packRHPFrame(char *frame,char payload[], uint8_t type, uint16_t portID){
     memcpy(&frame[4],&length,sizeof(length));
 
     //Add the payload in reverse order to match the little endianness
-    for(int i = 0;i < length;i++){
-        frame[5+i] = payload[length-1-i];
+    if(type == RHP_CONTROL){
+        for(int i = 0;i < length;i++){
+            frame[5+i] = payload[length-1-i];
+        }
+    } else if(type == RHMP_MESSAGE){
+        for(int i = 0;i < length;i++){
+            frame[5+i] = payload[i];
+        }
     }
+
 
     //Add an 8-bit buffer if it is not an even number of bytes
     if(((5+length)%2) != 0){
@@ -183,10 +194,10 @@ void parseRHPFrame(char buffer[], int numBytes){
 }
 
 void packRHMPFrame(char *frame,char payload[], uint8_t type, uint16_t srcPort, uint16_t dstPort) {
-    frame[0] = (type & 0b00001111) | (uint8_t)((srcPort & 0x000F)<<4);
-    frame[1] = (uint8_t)((srcPort & 0b00111111110000) >> 4);
-    frame[2] = (uint8_t)((dstPort & 0b00000000111111) << 2) | (uint8_t)((srcPort & 0b11000000000000) >> 12);
-    frame[3] = (uint8_t)((dstPort & 0b11111111000000) >> 6);
+    frame[0] = (type & 0x0F) | (uint8_t)((srcPort & 0x000F)<<4);
+    frame[1] = (uint8_t)((srcPort & 0x0FF0) >> 4);
+    frame[2] = (uint8_t)((uint8_t)((dstPort & 0x003F) << 2) | (uint8_t)((srcPort & 0x3000) >> 12));
+    frame[3] = (uint8_t)((dstPort & 0x3FC0) >> 6);
 
     if(type == MESSAGE_RESPONSE){
         uint8_t length = 0;
@@ -317,9 +328,10 @@ int main() {
     char RHMPMessage2[BUF_LEN];
     char RHPMessage2[BUF_LEN];
     
+    
     packRHMPFrame(&RHMPMessage2,"", ID_REQUEST, CoryCM, DEST_PORT);
-    printf("Frame: %s\n",RHMPMessage2);
-    int numSendBytes2 = packRHPFrame(&RHPMessage2,RHMPMessage2,RHMP_MESSAGE,CoryCM);
+    parseRHMPFrame(RHMPMessage2);
+    int numSendBytes2 = packRHPFrame(&RHPMessage2,RHMPMessage2,RHMP_MESSAGE,312);
     //parseRHPFrame(RHPMessage,14);
     //printf("Checksum Test: %i",validateChecksum(RHPMessage,14));
 
