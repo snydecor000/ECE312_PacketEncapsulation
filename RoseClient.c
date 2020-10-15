@@ -1,4 +1,34 @@
-/************* UDP CLIENT CODE *******************/
+/*
+*   Tristen Foisy and Cory Snyder
+*   ECE312-01 
+*   Project 2: Packet Ecapsulation
+*   
+*   In this project we were required to implement 2 protocols 
+*   directly above UDP: RPH, and RHMP.  
+*
+*   RHP, or Rose-Hulman Protocol, is the lower of the two protocols, 
+*   with fields: version, type, portID, length, payload, buffer, and checksum
+*   RHP frames are always an even number of characters long, and the checksum
+*   is a 16-bit checksum of the whole frame.  RHP frames can be one of 2 types:
+*   A Control Message (where the payload is an ascii character string)
+*   A RHMP Message (where the payload is an RHMP Frame)
+*   
+*   We created functions validateChecksum() and makeChecksum() to handle the 
+*   sending and recieving checksum calculations.
+*
+*   RHP Frames are creating using the function packRHPFrame() and
+*   RHP Frames are decoded and printed to the console with parseRHPFrame()
+*
+*   RHMP, or Rose-Hulman Message Protocol, is the higher of the two protocols,
+*   with fields: type, srcPort, dstPort, length, and payload.
+*   RHMP Frames can be one of 4 types:
+*   An ID Request (with no payload)
+*   An ID Response (where the payload is a 32-bit unsigned integer identifier)
+*   A Message Request (with no payload)
+*   A Message Response (where the payload is an ascii character string)
+*
+*   
+*/
 
 #include <stdio.h>
 #include <sys/socket.h>
@@ -8,18 +38,26 @@
 #include <string.h>
 
 #define SERVER "137.112.38.47"
-#define MESSAGE "hello\0"
 #define PORT 1874
 #define BUF_LEN 1024
+//Our CM numbers
 #define TristenCM 223
 #define CoryCM 514
+//Destination RHMP Port
+#define DEST_PORT 105
+//RHP Message Types
 #define RHP_CONTROL 2
 #define RHMP_MESSAGE 8
+//RHMP Message Types
+#define ID_REQUEST 2
+#define MESSAGE_REQUEST 4
+#define ID_RESPONSE 6
+#define MESSAGE_RESPONSE 8
 
 /* This function takes in an RHP frame and validates or invalidates 
 *  the message according to the 16 bit checksum at the end of the message.
 *  It will return 0 if it failed, and 1 if the frame passed CRC. */
-int validChecksum(char buffer[],int numBytes){
+int validateChecksum(char buffer[],int numBytes){
     //convert the frame character array to an array of 16 bit values
     uint16_t newBuffer[numBytes/2];
     for(int i = 0;i < numBytes/2;i++){
@@ -128,7 +166,7 @@ void parseRHPFrame(char buffer[], int numBytes){
     uint16_t checksum = (uint16_t)(buffer[numBytes-1]<<8) + (uint8_t)buffer[numBytes-2];
 
     //Print out the message and the fields
-    printf("Received from server:\nVersion #: %u\nMessage Type: %u\n", version,type);
+    printf("Received from server:\nVersion #: %u\nRHP Message Type: %u\n", version,type);
     printf("PortID: %u\nMessage Length: %u\n",portID,length);
 
     //If this is a Control Message using only RHP, display the message 
@@ -139,8 +177,64 @@ void parseRHPFrame(char buffer[], int numBytes){
     //If this is a RHMP Message, parse the RHMP frame
     if(type == RHMP_MESSAGE){
         printf("This is a RHMP Message\n");
-        //parseRHMPFrame();
+        parseRHMPFrame(receivedMessage);
         printf("Checksum: 0x%X\n",checksum);
+    }
+}
+
+void packRHMPFrame(char *frame,char payload[], uint8_t type, uint16_t srcPort, uint16_t dstPort) {
+    frame[0] = (type & 0b00001111) | (uint8_t)((srcPort & 0x000F)<<4);
+    frame[1] = (uint8_t)((srcPort & 0b00111111110000) >> 4);
+    frame[2] = (uint8_t)((dstPort & 0b00000000111111) << 2) | (uint8_t)((srcPort & 0b11000000000000) >> 12);
+    frame[3] = (uint8_t)((dstPort & 0b11111111000000) >> 6);
+
+    if(type == MESSAGE_RESPONSE){
+        uint8_t length = 0;
+
+        //Get the length of the payload in bytes
+        while(payload[length] != '\0'){
+            length++;
+        }
+        length++;
+
+        frame[4] = length;
+
+        //Add the payload in reverse order to match the little endianness
+        for(int i = 0;i < length;i++){
+            frame[5+i] = payload[length-1-i];
+        }
+    } else if(type == ID_RESPONSE) {
+        uint8_t length = 4;
+        for(int i = 0;i < length;i++){
+            frame[4+i] = payload[length-1-i];
+        }
+    } else {
+        //No Payload
+    }
+}
+
+void parseRHMPFrame(char buffer[]){
+    uint8_t type = (buffer[0] & 0x0F);
+    uint16_t srcPort = (uint16_t)((buffer[0] & 0xF0)>>4) | (uint16_t)(buffer[1]<<4) | (uint16_t)((buffer[2] & 0x03)<<12);
+    uint16_t dstPort = (uint16_t)((buffer[2] & 0xFC)>>2) | (uint16_t)(buffer[3]<<6);
+
+    //Print out the message and the fields
+    printf("RHMP Message Type: %u\n", type);
+    printf("Source Port: %u\nDestination Port: %u\n",srcPort,dstPort);
+
+    if(type == MESSAGE_RESPONSE){
+        uint8_t length = buffer[4];
+        printf("Length: %u\n",length);
+
+        char receivedMessage[BUF_LEN];
+        for(int i = 0; i < length; i++){
+            receivedMessage[i] = buffer[5+i];
+        }
+
+        printf("RHMP Message: %s\n",receivedMessage);
+    } else if(type == ID_RESPONSE){
+        uint32_t id = buffer[4] + (buffer[5]<<8) + (buffer[6]<<16) + (buffer[7]<<24);
+        printf("RHMP ID Response: %u\n",id);
     }
 }
 
@@ -179,23 +273,23 @@ int main() {
     serverAddr.sin_addr.s_addr = inet_addr(SERVER);
     memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);
 
-    char RHPMessage[BUF_LEN];
-    int numSendBytes = packRHPFrame(&RHPMessage,MESSAGE,RHP_CONTROL,CoryCM);
-    //parseRHPFrame(RHPMessage,14);
-    //printf("Checksum Test: %i",validChecksum(RHPMessage,14));
-
-
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     //Sends the first RHP Control Message: "hello\0"
 
+    char message1[] = "hello\0";
+    char RHPMessage1[BUF_LEN];
+    int numSendBytes1 = packRHPFrame(&RHPMessage1,message1,RHP_CONTROL,CoryCM);
+    //parseRHPFrame(RHPMessage,14);
+    //printf("Checksum Test: %i",validateChecksum(RHPMessage,14));
+
     // send the message to the server 
-    if (sendto(clientSocket, RHPMessage, numSendBytes, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+    if (sendto(clientSocket, RHPMessage1, numSendBytes1, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
         perror("sendto failed");
         return 0;
     }
 
-    printf("RHP Control Message sent: %s\n",MESSAGE);
+    printf("RHP Control Message sent: %s\n",message1);
 
     //Loop to attempt the transmission 5 times
     for(int q = 0;q < 5;q++){
@@ -203,17 +297,57 @@ int main() {
         nBytes = recvfrom(clientSocket, buffer, BUF_LEN, 0, NULL, NULL);
 
         //If the checksum is valid, then display the message.  If not, resend our message 
-        if(validChecksum(buffer,nBytes) != 0){
+        if(validateChecksum(buffer,nBytes) != 0){
             parseRHPFrame(buffer,nBytes);
             printf("Num Bytes: %i\n",nBytes);
             break;//Break out of the loop because we had a successfully received message
         } else if(q < 5) {
             //Resend the message
-            if (sendto(clientSocket, RHPMessage, numSendBytes, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+            if (sendto(clientSocket, RHPMessage1, numSendBytes1, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
                 perror("sendto failed");
                 return 0;
             }
-            printf("RHP Control Message sent: %s\n",MESSAGE);
+            printf("RHP Control Message sent: %s\n",message1);
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //Sends the first RHMP Request Message
+
+    char RHMPMessage2[BUF_LEN];
+    char RHPMessage2[BUF_LEN];
+    
+    packRHMPFrame(&RHMPMessage2,"", ID_REQUEST, CoryCM, DEST_PORT);
+    printf("Frame: %s\n",RHMPMessage2);
+    int numSendBytes2 = packRHPFrame(&RHPMessage2,RHMPMessage2,RHMP_MESSAGE,CoryCM);
+    //parseRHPFrame(RHPMessage,14);
+    //printf("Checksum Test: %i",validateChecksum(RHPMessage,14));
+
+    // send the message to the server 
+    if (sendto(clientSocket, RHPMessage2, numSendBytes2, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+        perror("sendto failed");
+        return 0;
+    }
+
+    printf("RHMP ID Request Message sent\n");
+
+    //Loop to attempt the transmission 5 times
+    for(int q = 0;q < 5;q++){
+        //Receive message from server
+        nBytes = recvfrom(clientSocket, buffer, BUF_LEN, 0, NULL, NULL);
+
+        //If the checksum is valid, then display the message.  If not, resend our message 
+        if(validateChecksum(buffer,nBytes) != 0){
+            parseRHPFrame(buffer,nBytes);
+            printf("Num Bytes: %i\n",nBytes);
+            break;//Break out of the loop because we had a successfully received message
+        } else if(q < 5) {
+            //Resend the message
+            if (sendto(clientSocket, RHPMessage2, numSendBytes2, 0,(struct sockaddr *) &serverAddr, sizeof (serverAddr)) < 0) {
+                perror("sendto failed");
+                return 0;
+            }
+            printf("RHMP ID Request Message sent\n");
         }
     }
 
